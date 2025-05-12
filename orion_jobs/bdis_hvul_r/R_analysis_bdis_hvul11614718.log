@@ -1,0 +1,20 @@
+
+
+processing file: bdis_hvul_r.Rmd
+1/12               
+2/12 [libraries]   
+3/12               
+4/12 [setup]       
+5/12               
+6/12 [input]       
+7/12               
+8/12 [coexpression]
+9/12               
+10/12 [comparison]  
+11/12               
+12/12 [genepairs]   
+output file: bdis_hvul_r.knit.md
+
+/mnt/users/tonjeei/bin/pandoc +RTS -K512m -RTS bdis_hvul_r.knit.md --to html4 --from markdown+autolink_bare_uris+tex_math_single_backslash --output bdis_hvul_r.html --lua-filter /cluster/software/R/library-4.3/rmarkdown/rmarkdown/lua/pagebreak.lua --lua-filter /cluster/software/R/library-4.3/rmarkdown/rmarkdown/lua/latex-div.lua --self-contained --variable bs3=TRUE --section-divs --template /cluster/software/R/library-4.3/rmarkdown/rmd/h/default.html --no-highlight --variable highlightjs=1 --variable theme=yeti --mathjax --variable 'mathjax-url=https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML' --include-in-header /home/work/Rtmprg0RAY/rmarkdown-str2dd5ee608e713c.html --variable code_folding=hide --variable code_menu=1 
+
+Output created: bdis_hvul_r.html
