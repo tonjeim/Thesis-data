@@ -1,0 +1,487 @@
+---
+title: "Data analysis for root samples"
+output: html_document
+---
+
+```{r setup, include=FALSE, eval = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r,warning=FALSE,message=FALSE}
+library(tidyverse)
+library(readr)
+library(dynamicTreeCut)
+library(ComplexHeatmap)
+library(ggthemes)
+library(GO.db)
+library(AnnotationDbi)
+library(biomaRt)
+```
+
+
+
+### Gene list construction
+```{r}
+# load comparison tables
+load('Data/bdis_bsyl_l_tbl.RData')
+load('Data/bdis_bsyl_r_tbl.RData')
+load('Data/bdis_hvul_l_tbl.RData')
+load('Data/bdis_hvul_r_tbl.RData')
+load('Data/hjub_hvul_l_tbl.RData')
+load('Data/hjub_hvul_r_tbl.RData')
+
+# combine all orthologs into one table
+bdis_bsyl_l_long <- bdis_bsyl_l |>
+  dplyr::rename(Brachypodium_distachyon = Species1, Brachypodium_sylvaticum = Species2) |> 
+  dplyr::select(Orthogroup, Brachypodium_distachyon, Brachypodium_sylvaticum) |>
+  pivot_longer(
+    cols = -Orthogroup,
+    names_to = "Species",
+    values_to = "Gene"
+  ) 
+
+bdis_bsyl_r_long <- bdis_bsyl_r |>
+  dplyr::rename(Brachypodium_distachyon = Species1, Brachypodium_sylvaticum = Species2) |> 
+  dplyr::select(Orthogroup, Brachypodium_distachyon, Brachypodium_sylvaticum) |>
+  pivot_longer(
+    cols = -Orthogroup,
+    names_to = "Species",
+    values_to = "Gene"
+  ) 
+
+bdis_hvul_l_long <- bdis_hvul_l |>
+  dplyr::rename(Brachypodium_distachyon = Species1, Hordeum_vulgare = Species2) |> 
+  dplyr::select(Orthogroup, Brachypodium_distachyon, Hordeum_vulgare) |>
+  pivot_longer(
+    cols = -Orthogroup,
+    names_to = "Species",
+    values_to = "Gene"
+  )
+
+bdis_hvul_r_long <- bdis_hvul_r |>
+  dplyr::rename(Brachypodium_distachyon = Species1, Hordeum_vulgare = Species2) |> 
+  dplyr::select(Orthogroup, Brachypodium_distachyon, Hordeum_vulgare) |>
+  pivot_longer(
+    cols = -Orthogroup,
+    names_to = "Species",
+    values_to = "Gene"
+  )
+
+hjub_hvul_l_long <- hjub_hvul_l |>
+  dplyr::rename(Hordeum_jubatum = Species1, Hordeum_vulgare = Species2) |> 
+  dplyr::select(Orthogroup, Hordeum_jubatum, Hordeum_vulgare) |>
+  pivot_longer(
+    cols = -Orthogroup,
+    names_to = "Species",
+    values_to = "Gene"
+  )
+
+hjub_hvul_r_long <- hjub_hvul_r |>
+  dplyr::rename(Hordeum_jubatum = Species1, Hordeum_vulgare = Species2) |> 
+  dplyr::select(Orthogroup, Hordeum_jubatum, Hordeum_vulgare) |>
+  pivot_longer(
+    cols = -Orthogroup,
+    names_to = "Species",
+    values_to = "Gene"
+  )
+
+ortho_long <- rbind(bdis_bsyl_l_long, 
+                    bdis_bsyl_r_long, 
+                    bdis_hvul_l_long, 
+                    bdis_hvul_r_long, 
+                    hjub_hvul_l_long, 
+                    hjub_hvul_r_long) |> distinct()
+
+ortho_wide <- ortho_long |> 
+  group_by(Orthogroup, Species) |>
+  mutate(id = row_number()) |>
+  ungroup() |> 
+  pivot_wider(names_from = Species, values_from = Gene) |>
+  dplyr::select(-id)
+
+
+# add comparison data to foundation orthogroup table
+left_join_tables <- function(orthogroup_table, comparison_table, species1_name, species2_name, column_name) {
+  comparison_table <- comparison_table |>
+    mutate_at(.vars = vars(contains("p.val")), .fun = as.numeric) |>
+    mutate(across(where(is.character), str_squish))
+  
+  names(comparison_table)[names(comparison_table) == "Species1"] <- species1_name
+  names(comparison_table)[names(comparison_table) == "Species2"] <- species2_name
+  
+  combined_table <- orthogroup_table |>
+    left_join(comparison_table,
+              by = c("Orthogroup", species1_name, species2_name),
+              relationship = "many-to-many"
+    ) |>
+    distinct() |> 
+    mutate(!!paste0("cons_", column_name) := case_when(
+      Max.p.val < 0.05 ~ TRUE,
+      Max.p.val >= 0.05 ~ FALSE
+    )) |> 
+    dplyr::select(-starts_with("Species1"), -starts_with("Species2")) |>
+    dplyr::rename(!!paste0("Max.p.val_", column_name) := Max.p.val)
+  
+  return(combined_table)
+  
+}
+
+# call function
+gene_list_root <- ortho_wide |>
+  # Annual comparison
+  left_join_tables(
+    comparison_table = bdis_hvul_r, 
+    species1_name = "Brachypodium_distachyon", 
+    species2_name = "Hordeum_vulgare", 
+    column_name = "annual"
+  ) |>
+  # B genus comparison
+  left_join_tables(
+    comparison_table = bdis_bsyl_r,
+    species1_name = "Brachypodium_distachyon",
+    species2_name = "Brachypodium_sylvaticum",
+    column_name = "B_genus"
+  ) |>
+  # H genus comparison
+  left_join_tables(
+    comparison_table = hjub_hvul_r,
+    species1_name = "Hordeum_jubatum", 
+    species2_name = "Hordeum_vulgare",
+    column_name = "H_genus"
+  ) 
+
+# filter gene list to fulfill conserved/diverged criteria
+gene_list_root_filtered <- gene_list_root |> 
+  filter(cons_annual == TRUE & cons_B_genus == FALSE & cons_H_genus == FALSE)
+
+# select most conserved ortholog 
+remove_duplicates <- function(gene_list, species_colname, genus_specific_p_val_colname) {
+  one_to_one <- gene_list |>
+    dplyr::select(Orthogroup, !!sym(species_colname), Max.p.val_annual, !!sym(genus_specific_p_val_colname)) |>
+    group_by(Orthogroup) |>
+    filter(n() == 1) |>
+    ungroup() |>
+    bind_rows(
+      gene_list |>
+        dplyr::select(Orthogroup, !!sym(species_colname), Max.p.val_annual, !!sym(genus_specific_p_val_colname)) |>
+        group_by(Orthogroup) |>
+        filter(n() > 1) |>
+        arrange(Max.p.val_annual, !!sym(genus_specific_p_val_colname)) |>
+        dplyr::slice(1) |>
+        ungroup() |>
+        arrange(Orthogroup)
+    )
+  
+  return(one_to_one)
+  
+}
+
+bdis_list <- remove_duplicates(gene_list_root_filtered, "Brachypodium_distachyon", "Max.p.val_B_genus")
+bsyl_list <- remove_duplicates(gene_list_root_filtered, "Brachypodium_sylvaticum", "Max.p.val_B_genus")
+hvul_list <- remove_duplicates(gene_list_root_filtered, "Hordeum_vulgare", "Max.p.val_H_genus")
+hjub_list <- remove_duplicates(gene_list_root_filtered, "Hordeum_jubatum", "Max.p.val_H_genus")
+
+# Update gene list to achieve one-to-one relationship between orthologs and orthogroups 
+gene_list_root_filtered <- gene_list_root_filtered |>
+  filter(Brachypodium_distachyon %in% bdis_list$Brachypodium_distachyon) |>
+  filter(Brachypodium_sylvaticum %in% bsyl_list$Brachypodium_sylvaticum) |>
+  filter(Hordeum_jubatum %in% hjub_list$Hordeum_jubatum) |>
+  filter(Hordeum_vulgare %in% hvul_list$Hordeum_vulgare)
+
+gene_list_root_filtered
+```
+
+
+### Heatmap analysis
+```{r, message = FALSE, warning=FALSE}
+# format expression data and make new column titles 
+format_expression_data <- function(file_path, species_name, gene_version = NULL) {
+  expr_data <- read.delim(file = file_path, sep = "\t", header = TRUE)
+  
+  if (!is.null(gene_version)) {
+    expr_data <- expr_data |> 
+      mutate(GeneID = str_remove(GeneID, gene_version))
+  }
+  
+  formated_data <- expr_data |>
+    pivot_longer(cols = -GeneID, names_to = "Replicate", values_to = "Value") |>
+    mutate(Time = str_extract(Replicate, "T[1-5]")) |>
+    group_by(GeneID) |>
+    mutate(Value = scale(Value)[, 1]) |> # Compute gene-wise z-scores
+    ungroup() |>
+    distinct(GeneID, Time, .keep_all = TRUE) |>
+    mutate(Time_Species = paste0(Time, "_", species_name)) |>
+    dplyr::select(GeneID, Time_Species, Value) |>
+    pivot_wider(names_from = Time_Species, values_from = Value)
+  
+  # Remove B. sylvaticum root sample from T5
+  if (grepl("BSYL_R", file_path)) { 
+    formated_data <- formated_data |> dplyr::select(-matches("T5"))
+  }
+  
+  return(formated_data)
+}
+
+B_dis_R_expr <- format_expression_data(
+  file_path = "Data/BDIS_R_vst-normalized.tsv",
+  species_name = "Brachypodium_distachyon",
+  gene_version = "\\.v3.2$")
+
+B_syl_R_expr <- format_expression_data(
+  file_path = "Data/BSYL_R_vst-normalized.tsv",
+  species_name = "Brachypodium_sylvaticum",
+  gene_version = "\\.v2.1$")
+
+H_vul_R_expr <- format_expression_data(
+  file_path = "Data/HVUL_R_vst-normalized.tsv",
+  species_name = "Hordeum_vulgare",
+  gene_version = "\\.V3$")
+
+H_jub_R_expr <- format_expression_data(
+  file_path = "Data/HJUB_R_vst-normalized.tsv",
+  species_name = "Hordeum_jubatum")
+
+
+# Scale expression data across species
+scale_species_wise <- function(gene_list, species_column, expression_data, gene_id_column = "GeneID") {
+  gene_list |>
+    dplyr::select(Orthogroup, !!sym(species_column)) |>
+    left_join(expression_data, by = setNames(gene_id_column, species_column)) |>
+    column_to_rownames("Orthogroup") |>
+    dplyr::select(-!!sym(species_column)) |>
+    t() |>
+    scale() |>
+    t()
+}
+
+# Scale species individually
+bdis_scaled <- scale_species_wise(bdis_list, "Brachypodium_distachyon", B_dis_R_expr)
+bsyl_scaled <- scale_species_wise(bsyl_list, "Brachypodium_sylvaticum", B_syl_R_expr)
+hvul_scaled <- scale_species_wise(hvul_list, "Hordeum_vulgare", H_vul_R_expr)
+hjub_scaled <- scale_species_wise(hjub_list, "Hordeum_jubatum", H_jub_R_expr)
+
+# Combine scaled data into one data frame
+scaled_species_matrix <- cbind(bsyl_scaled, bdis_scaled, hvul_scaled, hjub_scaled)
+
+# Set species order for visualization
+species_order <- factor(
+  colnames(scaled_species_matrix) |> str_extract("_.*") |> str_remove("^_"),
+  levels = c("Brachypodium_sylvaticum", "Brachypodium_distachyon", "Hordeum_vulgare", "Hordeum_jubatum")
+)
+
+# Cluster data
+cor_mat <- cor(t(scaled_species_matrix), method = "pearson", use = "pairwise.complete.obs")
+dist_cor_mat <- as.dist(1 - cor_mat)
+cor_clusters_hclust <- hclust(d = dist_cor_mat, method = "ward.D2")
+
+cor_clusters <- cutreeDynamic(
+  dendro = cor_clusters_hclust,
+  distM = as.matrix(dist_cor_mat),
+  method = "hybrid",
+  minClusterSize = 20,
+  deepSplit = 2,
+  pamRespectsDendro = TRUE
+)
+
+# store cluster information
+root_clusters <- data.frame(
+  Orthogroup = rownames(scaled_species_matrix),  
+  Cluster = cor_clusters  
+)
+
+# generate heatmap
+Heatmap(
+  scaled_species_matrix |> as.matrix(),
+  cluster_rows = TRUE, 
+  row_split = cor_clusters,
+  gap = unit(0.8, "mm"), 
+  row_title_gp = gpar(fontsize = 9),
+  cluster_columns = FALSE, 
+  column_labels = colnames(scaled_species_matrix) |> str_extract("^[^_]+"),
+  show_row_names = FALSE,
+  column_split = species_order,  
+  column_title_gp = gpar(fontsize = 10),
+  column_names_gp = gpar(fontsize =9),
+  heatmap_legend_param = list(
+    title = "Expression Level",
+    direction = "horizontal",  # Make legend horizontal
+    legend_width = unit(3, "cm"),
+    title_position = "topcenter"
+  ),
+)
+
+# visualize mean expression trends for annuals and perennials
+get_cluster_trends_all <- function(data, clusters) {
+  data_frame <- as.data.frame(data) |>
+    mutate(cluster = clusters) |>
+    rownames_to_column("orthogroup") |>
+    pivot_longer(
+      cols = -c(orthogroup, cluster),
+      names_to = c("timepoint", "species"),
+      names_pattern = "(T\\d)_(.*)",
+      values_to = "expression"
+    ) |>
+    group_by(cluster, species, timepoint) |>
+    summarise(mean_expr = mean(expression, na.rm = TRUE), .groups = "drop") |>
+    mutate(timepoint = as.numeric(str_extract(timepoint, "\\d")))
+}
+
+cluster_trends <- get_cluster_trends_all(scaled_species_matrix, cor_clusters)
+
+cluster_trends |>
+  mutate(life_history = case_when(
+    str_detect(species, "distachyon|vulgare") ~ "annual",
+    TRUE ~ "perennial")) -> cluster_trends
+
+ggplot(cluster_trends, aes(x = timepoint, y = mean_expr, color = life_history, group = species)) +
+  geom_line(aes(group = species)) +
+  facet_wrap(~cluster, labeller = labeller(cluster = function(x) 
+    paste0("Cluster ", x, "\n(n=", table(cor_clusters)[x], ")"))) +
+  theme_few() +
+  labs(x = "Time point", y = "Mean expression", color = "Life history") +
+  scale_color_manual(values = c("annual" = "#FF9999", "perennial" = "#9999CC")) +
+  theme(legend.title = element_text(face = "bold"))
+
+```
+
+
+### GO annotations
+```{r, eval=FALSE}
+# get annotatiosn from Ensembl plants and filter for biological processes
+mart <- useMart("plants_mart", dataset = "bdistachyon_eg_gene", host = "https://plants.ensembl.org")
+go_info <- AnnotationDbi::select(GO.db, keys=keys(GO.db), columns=c("ONTOLOGY"))
+bp_terms <- go_info$GO[go_info$ONTOLOGY == "BP"]
+
+# map annotations to gene ids
+plants_ensembl_anno_bp <- getBM(
+  attributes = c("ensembl_gene_id", "go_id", "name_1006"),
+  mart = mart) |> 
+  mutate(ensembl_gene_id = str_replace(ensembl_gene_id, "BRADI_", "Bradi")) |>
+  mutate(ensembl_gene_id = str_replace(ensembl_gene_id, "v3", "")) |> 
+  dplyr::rename(standard_gene_id = ensembl_gene_id, go_desc = name_1006) |> 
+  filter(go_id %in% bp_terms)
+
+# add annotations to filtered gene list
+gene_list_root_annotated <- gene_list_root_filtered |>
+  left_join(plants_ensembl_anno_bp, by = c('Brachypodium_distachyon' = 'standard_gene_id')) |> 
+  dplyr::select(Orthogroup, Brachypodium_distachyon, Max.p.val_annual, go_id, go_desc) |> 
+  dplyr::rename(GeneID = Brachypodium_distachyon) |> 
+  arrange(Max.p.val_annual)
+
+# add annotations to clusters
+root_clusters_annotated <- root_clusters |> 
+  left_join(gene_list_root_filtered[,c('Orthogroup', 'Brachypodium_distachyon')], by = c('Orthogroup')) |> 
+  left_join(plants_ensembl_anno_bp, by = c('Brachypodium_distachyon' = 'standard_gene_id')) |> 
+  dplyr::select(Orthogroup, Brachypodium_distachyon, Cluster, go_id, go_desc) 
+  
+# count occurrences of each GO description per cluster
+go_counts <- root_clusters_annotated |>
+  filter(!is.na(go_desc)) |> 
+  group_by(Cluster, go_desc) |>
+  summarise(count = n(), .groups = "drop") |>
+  arrange(Cluster, desc(count)) |> 
+  group_by(Cluster) |>
+  slice_max(order_by = count, n = 5)  
+```
+
+
+### Time series plots
+```{r, warning = FALSE, message=FALSE}
+# format expression data
+format_data_for_plotting <- function(file_path, tissue_specific_filtered_gene_list, species, gene_version, tissue, genus, strategy) {
+  expr_data <- read.delim(file = file_path, sep = "\t", header = TRUE)
+  
+  if (!is.null(gene_version)) {
+    expr_data <- expr_data |> 
+      mutate(GeneID = str_remove(GeneID, gene_version))
+  }
+  
+  formated_data <- expr_data |>
+    inner_join(tissue_specific_filtered_gene_list |> dplyr::select(Orthogroup, all_of(species)), by = c(GeneID = species)) |>  
+    dplyr::select(Orthogroup, GeneID, T1, T2, T3, T4, T5) |>   
+    pivot_longer(
+      cols = starts_with("T"),  # Pivot time points only
+      names_to = "Day",
+      values_to = "Expression"
+    ) |>
+    mutate(Species = species) |>
+    mutate(Tissue = tissue) |>
+    mutate(Genus = genus) |>
+    mutate(Strategy = strategy) |>
+    mutate(Day = case_when(
+      Day == "T1" ~ 7.5,
+      Day == "T2" ~ 14.5,
+      Day == "T3" ~ 28.5,
+      Day == "T4" ~ 42.5,
+      Day == "T5" ~ 57.5
+    ))
+  
+  return(formated_data)
+}
+
+bdis_r_expr <- format_data_for_plotting(
+  file_path = "Data/BDIS_R_vst-normalized.tsv",
+  species = "Brachypodium_distachyon",
+  gene_version = "\\.v3.2$", 
+  tissue_specific_filtered_gene_list = gene_list_root_filtered,
+  tissue = "Root", 
+  genus = "Brachypodium", 
+  strategy = "Annual")
+
+bsyl_r_expr <- format_data_for_plotting(
+  file_path = "Data/BSYL_R_vst-normalized.tsv",
+  species = "Brachypodium_sylvaticum",
+  gene_version = "\\.v2.1$", 
+  tissue_specific_filtered_gene_list = gene_list_root_filtered,
+  tissue = "Root", 
+  genus = "Brachypodium", 
+  strategy = "Perennial")
+
+hjub_r_expr <- format_data_for_plotting(
+  file_path = "Data/HJUB_R_vst-normalized.tsv",
+  species = "Hordeum_jubatum",
+  gene_version = NULL, 
+  tissue_specific_filtered_gene_list = gene_list_root_filtered,
+  tissue = "Root", 
+  genus = "Hordeum", 
+  strategy = "Perennial")
+
+hvul_r_expr <- format_data_for_plotting(
+  file_path = "Data/HVUL_R_vst-normalized.tsv",
+  species = "Hordeum_vulgare",
+  gene_version = "\\.V3$", 
+  tissue_specific_filtered_gene_list = gene_list_root_filtered,
+  tissue = "Root", 
+  genus = "Hordeum", 
+  strategy = "Annual")
+
+# create expression table for all root samples
+expr_tbl_root <- rbind(bdis_r_expr, bsyl_r_expr, hjub_r_expr, hvul_r_expr) 
+
+# set order for panels
+expr_tbl_root <- expr_tbl_root |> 
+  mutate(Species = factor(Species, levels = c("Brachypodium_sylvaticum", "Brachypodium_distachyon", 
+                                              "Hordeum_vulgare", "Hordeum_jubatum"))) 
+# plot expression profiles
+expr_tbl_root |> 
+  filter(Orthogroup == 'OG0021589' & Tissue == 'Root') |> 
+  ggplot(aes(x = Day, y = Expression, group = GeneID, colour = Strategy)) +
+  geom_point() + 
+  scale_color_manual(values = c("Annual" = "#FF9999", "Perennial" = "#9999CC")) + 
+  geom_smooth(size = 1) +
+  labs(x = "Day",
+       y = "Expression level (VST)",
+       color = "Strategy",
+       title = "Bradi4g30540") +  
+  facet_grid(Species + GeneID ~., scales = "free_y") +
+  theme_few() +  
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 11),
+    strip.background = element_blank(),
+    strip.text = element_text(color = "black", size = 14),
+    strip.text.x = element_text(size = 7), 
+    strip.text.y = element_text(size = 7)
+  )
+
+```
